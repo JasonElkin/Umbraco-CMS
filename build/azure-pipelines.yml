@@ -53,7 +53,7 @@ stages:
             displayName: gulp build
             inputs:
               gulpFile: src/Umbraco.Web.UI.Client/gulpfile.js
-              targets: build
+              targets: coreBuild
               workingDirectory: src/Umbraco.Web.UI.Client
           - task: DotNetCoreCLI@2
             displayName: dotnet build
@@ -67,8 +67,8 @@ stages:
               targetPath: $(Build.SourcesDirectory)
               artifactName: build_output
 
-  - stage: Unit_Tests
-    displayName: Unit Tests
+  - stage: Test
+    displayName: Test
     dependsOn: Build
     jobs:
       - job:
@@ -94,7 +94,7 @@ stages:
               artifact: $(artifactName)
               path: $(Build.SourcesDirectory)
           - task: UseDotNet@2
-            condition: and(succeeded(), eq('$(Agent.OS)', 'Darwin')) # net6 already on the other images
+            condition: and(succeeded(), eq(variables['Agent.OS'], 'Darwin')) # net6 already on the other images
             displayName: use net6
             inputs:
               version: 6.x
@@ -105,10 +105,6 @@ stages:
               projects: '**/*.Tests.UnitTests.csproj'
               arguments: '--no-build --configuration $(buildConfiguration)'
 
-  - stage: Integration_Tests_SQLite
-    displayName: Integration Tests (SQLite)
-    dependsOn: Build
-    jobs:
       - job:
         displayName: integration tests (SQLite)
         strategy:
@@ -133,6 +129,7 @@ stages:
               path: $(Build.SourcesDirectory)
           - task: UseDotNet@2
             displayName: use net6
+            condition: and(succeeded(), eq(variables['Agent.OS'], 'Darwin')) # net6 already on the other images
             inputs:
               version: 6.x
           - task: DotNetCoreCLI@2
@@ -145,57 +142,38 @@ stages:
               Tests__Database__DatabaseType: 'Sqlite'
               Umbraco__Cms__global__MainDomLock: 'FileSystemMainDomLock'
 
-  - stage: Integration_Tests_SQLServer
-    condition: not(or(variables.isDev, variables.isFeature))
-    displayName: Integration Tests (SQL Server)
-    dependsOn: Build
-    jobs:
       - job:
-        pool:
-          vmImage: 'ubuntu-latest'
+        # condition: not(or(variables.isDev, variables.isFeature))
+        displayName: integration tests (SQL Server)
         timeoutInMinutes: 120
+        strategy:
+          matrix:
+            windows:
+              vmImage: 'windows-latest'
+              artifactName: build_output
+              serviceContainer: ''
+              databaseType: LocalDb
+              mainDomLock: MainDomSemaphoreLock
+            linux:
+              vmImage: 'ubuntu-latest'
+              artifactName: build_output
+              serviceContainer: mssql
+              databaseType: SqlServer
+              mainDomLock: SqlMainDomLock
         services:
-          mssql: mssql
-        displayName: integration tests (SQL Server) linux
-        steps:
-          - checkout: none
-          - task: DownloadPipelineArtifact@2
-            displayName: download build artifacts
-            inputs:
-              artifact: build_output
-              path: $(Build.SourcesDirectory)
-          - task: UseDotNet@2
-            displayName: use net6
-            inputs:
-              version: 6.x
-          - task: DotNetCoreCLI@2
-            displayName: dotnet test
-            inputs:
-              command: test
-              projects: '**/Umbraco.Tests.Integration.csproj'
-              arguments: '--no-build --configuration $(buildConfiguration)'
-            env:
-              Tests__Database__DatabaseType: 'SqlServer'
-              Tests__Database__SQLServerMasterConnectionString: 'Server=localhost,1433;User Id=sa;Password=$(SA_PASSWORD);'
-              Umbraco__Cms__global__MainDomLock: 'SqlMainDomLock'
-      - job:
-        timeoutInMinutes: 120
-        displayName: integration tests (SQL Server) windows
+          mssql: $[variables['serviceContainer']]
         pool:
-          vmImage: 'windows-latest'
+          vmImage: $(vmImage)
         steps:
           - checkout: none
           - task: DownloadPipelineArtifact@2
             displayName: download build artifacts
             inputs:
-              artifact: build_output
+              artifact: $(artifactName)
               path: $(Build.SourcesDirectory)
           - powershell: sqllocaldb start mssqllocaldb
+            condition: and(succeeded(), eq(variables['Agent.OS'], 'Windows_NT')) # no localdb on linux
             displayName: start localdb
-          - task: UseDotNet@2
-            displayName: use net6
-            inputs:
-              version: 6.x
           - task: DotNetCoreCLI@2
             displayName: dotnet test
             inputs:
@@ -203,5 +181,6 @@ stages:
               projects: '**/Umbraco.Tests.Integration.csproj'
               arguments: '--no-build --configuration $(buildConfiguration)'
             env:
-              Tests__Database__DatabaseType: 'LocalDb'
-              Umbraco__Cms__global__MainDomLock: 'MainDomSemaphoreLock'
+              Tests__Database__DatabaseType: $(databaseType)
+              Tests__Database__SQLServerMasterConnectionString: 'Server=localhost,1433;User Id=sa;Password=$(SA_PASSWORD);'
+              Umbraco__Cms__global__MainDomLock: $(mainDomLock)
